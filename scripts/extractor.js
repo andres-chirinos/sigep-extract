@@ -1,13 +1,13 @@
 (async function() {
     const STORAGE_KEY = 'sigep_scraping_data';
-    const PAGE_DELAY = 2500; // Aumentado ligeramente para dar margen a la carga de datos
+    const PAGE_DELAY = 2500; 
 
-    // Función auxiliar para generar un "hash" único simple basado en el contenido del registro
+    // Hash único para evitar duplicados
     const generateUniqueId = (record) => {
-        // Concatenamos campos clave para formar un string único que identifique la fila
         return `${record.entidad}-${record.nombre}-${record.cargo}-${record.fechaInicio}`.replace(/\s+/g, '').toLowerCase();
     };
 
+    // Función para esperar elementos en el DOM
     const waitForElement = (selector, timeout = 15000) => {
         return new Promise((resolve, reject) => {
             const start = Date.now();
@@ -26,9 +26,35 @@
 
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-    console.log("🚀 Iniciando script de extracción SIGEP (Versión Anti-Duplicados)...");
+    // Exponemos la función globalmente para que puedas escribir descargarAvanceJSONL() en la consola
+    window.descargarAvanceJSONL = function() {
+        const dataArray = Array.from(window.sigepDataMap ? window.sigepDataMap.values() : []);
+        if (dataArray.length === 0) {
+            console.warn("⚠️ No hay datos para descargar todavía.");
+            return;
+        }
 
-    // 1. Configurar filtro de Estado
+        // Convertir a formato JSON Lines (un objeto JSON por línea)
+        const jsonlContent = dataArray.map(obj => JSON.stringify(obj)).join('\n');
+        
+        // Usar Blob para soportar archivos muy grandes
+        const blob = new Blob([jsonlContent], { type: 'application/jsonlines+json' });
+        const url = URL.createObjectURL(blob);
+        
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `sigep_avance_${Date.now()}.jsonl`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        console.log(`✅ Descargado archivo JSONL con ${dataArray.length} registros hasta el momento.`);
+    };
+
+    console.log("🚀 Iniciando script de extracción SIGEP...");
+    console.log("💡 TIP: Puedes escribir 'descargarAvanceJSONL()' en esta consola en cualquier momento para descargar lo que se ha extraído hasta ahora.");
+
     try {
         const dropdownToggle = document.querySelector('.btn-group[dropdown] button');
         if (dropdownToggle && !dropdownToggle.innerText.includes('Todos')) {
@@ -46,21 +72,19 @@
         console.warn("⚠️ No se pudo automatizar el filtro de estado:", e);
     }
 
-    // 2. Cargar datos previos. 
-    // Usaremos un Map para evitar duplicados fácilmente (Clave: Hash Único, Valor: Objeto del registro)
     let rawStoredData = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-    let dataMap = new Map();
+    // Guardamos el Map globalmente para que descargarAvanceJSONL pueda acceder a él
+    window.sigepDataMap = new Map();
     
-    // Rellenar el Map con los datos previos para filtrar
     rawStoredData.forEach(item => {
         const id = generateUniqueId(item);
-        dataMap.set(id, item);
+        window.sigepDataMap.set(id, item);
     });
 
-    console.log(`📂 Iniciando con ${dataMap.size} registros únicos guardados de sesiones anteriores.`);
+    console.log(`📂 Iniciando con ${window.sigepDataMap.size} registros guardados previamente.`);
 
     let scrapingActive = true;
-    let pageStagnationCounter = 0; // Para detectar si nos quedamos atrapados en la misma página
+    let pageStagnationCounter = 0;
 
     while (scrapingActive) {
         try {
@@ -89,9 +113,8 @@
 
                     const recordId = generateUniqueId(record);
                     
-                    // Comprobación clave: ¿Este registro ya existe en nuestro almacenamiento?
-                    if (!dataMap.has(recordId)) {
-                        dataMap.set(recordId, record);
+                    if (!window.sigepDataMap.has(recordId)) {
+                        window.sigepDataMap.set(recordId, record);
                         newRecordsAddedThisPage++;
                     }
                 }
@@ -99,25 +122,20 @@
 
             console.log(`📊 Leídas ${rows.length} filas. Nuevos registros únicos añadidos: ${newRecordsAddedThisPage}`);
 
-            // Mecanismo de seguridad: Si no añadimos ningún registro nuevo y estamos iterando, 
-            // podríamos estar en la última página o la tabla no refrescó correctamente.
             if (newRecordsAddedThisPage === 0) {
                 pageStagnationCounter++;
                 if(pageStagnationCounter > 2) {
-                    console.log("⚠️ 3 páginas consecutivas sin datos nuevos. Abortando para evitar bucle infinito.");
+                    console.log("⚠️ 3 páginas consecutivas sin datos nuevos. Abortando bucle.");
                     scrapingActive = false;
                     break;
                 }
             } else {
-                pageStagnationCounter = 0; // Reiniciar contador si encontramos datos frescos
+                pageStagnationCounter = 0;
             }
 
-            // Convertir el Map de vuelta a un Array y guardar en LocalStorage
-            const updatedDataArray = Array.from(dataMap.values());
+            const updatedDataArray = Array.from(window.sigepDataMap.values());
             localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedDataArray));
-            console.log(`💾 Guardado en LocalStorage. Total general: ${updatedDataArray.length} registros.`);
 
-            // 3. Lógica de Paginación Avanzada
             const allLinks = Array.from(document.querySelectorAll('a.page-link, .pagination-next a, .page-item a'));
             const nextLink = allLinks.find(a => a.innerText.trim().toLowerCase().includes('siguiente') || a.innerText.trim() === '»');
 
@@ -136,25 +154,15 @@
 
             console.log("➡️ Haciendo clic en siguiente...");
             nextLink.click();
-            await sleep(PAGE_DELAY); // Espera crucial para que Angular destruya e inicialice la nueva tabla
+            await sleep(PAGE_DELAY);
 
         } catch (error) {
             console.error("❌ Error en el bucle principal:", error);
-            console.log("Intentando recuperar la tabla en 5 segundos...");
-            await sleep(5000); // Intento de recuperación ante caídas de red breves
+            await sleep(5000);
         }
     }
 
-    // 4. Descarga Final
-    const finalData = Array.from(dataMap.values());
-    console.log(`🎉 Proceso terminado. Generando archivo de descarga con ${finalData.length} registros.`);
-
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(finalData, null, 2));
-    const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute("href", dataStr);
-    downloadAnchor.setAttribute("download", `sigep_personal_${Date.now()}.json`);
-    document.body.appendChild(downloadAnchor);
-    downloadAnchor.click();
-    downloadAnchor.remove();
+    console.log("🎉 Proceso terminado automáticamente. Generando descarga final...");
+    window.descargarAvanceJSONL(); // Reutilizamos la función para la descarga final
 
 })();
