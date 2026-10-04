@@ -24,11 +24,11 @@ openbox &
 sleep 1
 
 echo "Iniciando servidor x11vnc..."
-x11vnc -display :99 -forever -shared -nopw -rfbport 5900 -listen 0.0.0.0 &
+x11vnc -display :99 -forever -shared -nopw -rfbport 5900 -listen 0.0.0.0 -quiet > /dev/null 2>&1 &
 sleep 1
 
 echo "Iniciando noVNC (acceso web en http://localhost:6080/vnc.html)..."
-websockify --web /usr/share/novnc 6080 localhost:5900 &
+websockify --web /usr/share/novnc 6080 localhost:5900 > /dev/null 2>&1 &
 sleep 2
 
 echo "Iniciando proceso extractor Puppeteer..."
