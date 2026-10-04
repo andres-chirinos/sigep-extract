@@ -8,7 +8,8 @@
     const STORE_NAME = 'records';
     const MIN_PAGE_DELAY = 1800; // ms mínimo entre páginas
     const MAX_PAGE_DELAY = 2800; // ms máximo (jitter humano)
-    const REQUEST_TIMEOUT = 25000; // ms para considerar que una petición falló
+    const REQUEST_TIMEOUT = 30000; // ms para considerar que una petición falló
+    const SPINNER_TIMEOUT = 30000; // ms máximo de espera a que desaparezca el spinner
     const MAX_PAGE_RETRIES = 5; // reintentos si el servidor SIGEP o Turnstile se atora
     const AUTO_DOWNLOAD_INTERVAL = 5000; // auto-descarga cada N registros
 
@@ -43,6 +44,31 @@
             r.fechaFin || '',
             r.estado || ''
         ].join('|').toLowerCase().replace(/\s+/g, ' ').trim();
+    };
+
+    // ==========================================
+    // DETECCIÓN INTELIGENTE DE SPINNER
+    // ==========================================
+    const isSpinnerActive = () => {
+        const spinner = document.querySelector('spinner-http .ball-pulse, spinner-http .posicion-spinner');
+        return !!spinner;
+    };
+
+    const waitForSpinnerToFinish = async (timeoutMs = SPINNER_TIMEOUT) => {
+        const start = Date.now();
+        let wasActive = false;
+        while (isSpinnerActive()) {
+            wasActive = true;
+            if (Date.now() - start > timeoutMs) {
+                console.warn("⚠️ Spinner de SIGEP tardó demasiado. Continuando...");
+                break;
+            }
+            await sleep(250);
+        }
+        // Margen para que Angular complete el ciclo de detección de cambios (ChangeDetection)
+        if (wasActive) {
+            await sleep(400);
+        }
     };
 
     // ==========================================
@@ -108,7 +134,6 @@
                     if (this.status === 200) {
                         try {
                             const json = JSON.parse(this.responseText);
-                            // Notificar a cualquier listener en espera
                             const callbacks = pendingPageResolvers.splice(0);
                             callbacks.forEach(cb => cb.resolve({ json, url: this._sigepUrl }));
                         } catch (err) {
@@ -121,7 +146,7 @@
                     }
                 });
 
-                this.addEventListener('error', function(err) {
+                this.addEventListener('error', function() {
                     const callbacks = pendingPageResolvers.splice(0);
                     callbacks.forEach(cb => cb.reject(new Error('Network error on persona request')));
                 });
@@ -174,7 +199,6 @@
             return;
         }
 
-        // Remover campo interno 'id' usado para IndexedDB si se desea pureza
         const jsonlContent = dataArray.map(obj => {
             const cleanObj = { ...obj };
             delete cleanObj.id;
@@ -304,26 +328,34 @@
     };
 
     // ==========================================
-    // GESTIÓN DE BOTÓN SIGUIENTE
+    // ESPERA Y GESTIÓN DE BOTÓN SIGUIENTE
     // ==========================================
-    const getNextButtonInfo = () => {
-        const nextLi = document.querySelector('li.pagination-next');
-        if (nextLi) {
-            const isDisabled = nextLi.classList.contains('disabled');
-            const link = nextLi.querySelector('a');
-            return { element: link, disabled: isDisabled };
-        }
+    const waitForNextButtonClickable = async (timeoutMs = 15000) => {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            // 1. Primero esperar a que cualquier spinner HTTP termine por completo
+            await waitForSpinnerToFinish(timeoutMs);
 
-        // Fallback genérico si cambia la estructura de clases
-        const allLinks = Array.from(document.querySelectorAll('a.page-link, .pagination-next a, .page-item a'));
-        const link = allLinks.find(a => a.innerText.trim().toLowerCase().includes('siguiente') || a.innerText.trim() === '»');
-        if (link) {
-            const parentLi = link.closest('li');
-            const isDisabled = parentLi ? parentLi.classList.contains('disabled') : false;
-            return { element: link, disabled: isDisabled };
+            // 2. Verificar estado del botón siguiente
+            const nextLi = document.querySelector('li.pagination-next');
+            if (nextLi) {
+                if (!nextLi.classList.contains('disabled')) {
+                    const link = nextLi.querySelector('a');
+                    if (link) return link;
+                }
+            } else {
+                const allLinks = Array.from(document.querySelectorAll('a.page-link, .pagination-next a, .page-item a'));
+                const link = allLinks.find(a => a.innerText.trim().toLowerCase().includes('siguiente') || a.innerText.trim() === '»');
+                if (link) {
+                    const parentLi = link.closest('li');
+                    if (!parentLi || !parentLi.classList.contains('disabled')) {
+                        return link;
+                    }
+                }
+            }
+            await sleep(300);
         }
-
-        return { element: null, disabled: true };
+        return null;
     };
 
     const simulateHumanClick = (element) => {
@@ -358,7 +390,10 @@
         detail: `Cargados ${window.sigepDataMap.size} registros previos.`
     });
 
-    // 2. Comprobar / automatizar filtro de estado 'Todos'
+    // 2. Esperar si la página está cargando inicialmente
+    await waitForSpinnerToFinish(15000);
+
+    // 3. Comprobar / automatizar filtro de estado 'Todos'
     try {
         const estadoBtn = Array.from(document.querySelectorAll('.btn-group button'))
             .find(b => b.innerText.includes('Estado:'));
@@ -372,6 +407,7 @@
             if (todosOption) {
                 todosOption.click();
                 console.log("✅ Filtro 'Estado: Todos' seleccionado.");
+                await waitForSpinnerToFinish(15000);
                 await sleep(MIN_PAGE_DELAY);
             }
         }
@@ -379,7 +415,7 @@
         console.warn("⚠️ No se pudo ajustar automáticamente el dropdown de Estado:", e);
     }
 
-    // 3. Capturar primera página si ya está renderizada en el DOM
+    // 4. Capturar primera página si ya está renderizada en el DOM
     const initialDomRows = extractFromDOM();
     if (initialDomRows.length > 0) {
         const toSave = [];
@@ -397,11 +433,13 @@
         }
     }
 
-    // 4. Bucle principal de paginación
+    // 5. Bucle principal de paginación
     window.__sigepScrapingActive = true;
     window.__sigepScrapingPaused = false;
 
-    let currentPage = 1;
+    // Detectar página inicial desde el DOM si es posible
+    const activePageEl = document.querySelector('li.pagination-page.active a');
+    let currentPage = activePageEl ? (parseInt(activePageEl.innerText.trim(), 10) || 1) : 1;
     let totalItems = 100000;
     let totalPages = Math.ceil(totalItems / 10);
     let sessionStartTime = Date.now();
@@ -416,12 +454,26 @@
         }
         if (!window.__sigepScrapingActive) break;
 
-        // Comprobar botón 'Siguiente'
-        const nextInfo = getNextButtonInfo();
-        if (!nextInfo.element || nextInfo.disabled) {
-            console.log("🏁 Última página alcanzada o botón 'Siguiente' deshabilitado.");
-            updateHUD({ status: "Finalizado", detail: "Todas las páginas fueron procesadas." });
-            break;
+        // Esperar a que el spinner desaparezca y el botón 'Siguiente' esté habilitado
+        updateHUD({
+            status: isSpinnerActive() ? "Cargando..." : "Esperando botón",
+            detail: isSpinnerActive() ? "Esperando a que finalice la carga de datos..." : `Buscando página ${currentPage + 1}...`
+        });
+
+        const nextBtn = await waitForNextButtonClickable(15000);
+        if (!nextBtn) {
+            // Si el botón no está disponible, comprobar si realmente estamos al final
+            await waitForSpinnerToFinish(10000);
+            const checkLi = document.querySelector('li.pagination-next');
+            if (!checkLi || checkLi.classList.contains('disabled') || currentPage >= totalPages) {
+                console.log("🏁 Fin de los datos alcanzado.");
+                updateHUD({ status: "Finalizado", detail: "Todas las páginas fueron procesadas." });
+                break;
+            } else {
+                console.warn("⚠️ Botón 'Siguiente' no respondió a tiempo. Reintentando ciclo...");
+                await sleep(2000);
+                continue;
+            }
         }
 
         let pageSuccess = false;
@@ -435,13 +487,13 @@
                     detail: `Pidiendo página ${currentPage + 1}...`
                 });
 
-                // Preparamos la promesa de escucha XHR
+                // 1. Armamos la promesa para la respuesta XHR
                 const responsePromise = waitForNextApiResponse(REQUEST_TIMEOUT);
 
-                // Disparamos clic humano en el botón
-                simulateHumanClick(nextInfo.element);
+                // 2. Disparamos clic humano en el botón habilitado
+                simulateHumanClick(nextBtn);
 
-                // Esperamos respuesta de la API
+                // 3. Esperamos respuesta de la API en la red
                 const apiResult = await responsePromise;
                 const json = apiResult.json;
 
@@ -467,7 +519,7 @@
                         await saveRecordsToDB(db, newlyAdded);
                     }
 
-                    // Cálculo de métricas y ETA
+                    // Métricas y ETA
                     const currentTotal = window.sigepDataMap.size;
                     const sessionRecords = currentTotal - initialCount;
                     let etaStr = "--";
@@ -491,10 +543,13 @@
 
                     // Auto-descarga periódica de seguridad
                     if (currentTotal - lastAutoDownloadCount >= AUTO_DOWNLOAD_INTERVAL) {
-                        console.log(`💾 Punto de guardado automático (${currentTotal} registros)...`);
+                        console.log(`💾 Guardado automático de seguridad (${currentTotal} registros)...`);
                         window.descargarAvanceJSONL('sigep_seguridad');
                         lastAutoDownloadCount = currentTotal;
                     }
+
+                    // 4. CRUCIAL: Esperar a que Angular procese los datos y apague el spinner
+                    await waitForSpinnerToFinish(SPINNER_TIMEOUT);
 
                     pageSuccess = true;
                 } else {
@@ -507,6 +562,7 @@
                     status: "Reintentando",
                     detail: `Fallo temporal: ${err.message}. Esperando ${3 * retryAttempt}s...`
                 });
+                await waitForSpinnerToFinish(10000);
                 await sleep(3000 * retryAttempt);
             }
         }
@@ -520,7 +576,7 @@
             break;
         }
 
-        // Delay humano con variación aleatoria para no disparar Cloudflare Turnstile
+        // Delay humano con variación aleatoria antes de solicitar la siguiente página
         await randomDelay(MIN_PAGE_DELAY, MAX_PAGE_DELAY);
     }
 
