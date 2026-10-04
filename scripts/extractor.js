@@ -8,8 +8,8 @@
     const STORE_NAME = 'records';
     const MIN_PAGE_DELAY = 1800; // ms mínimo entre páginas
     const MAX_PAGE_DELAY = 2800; // ms máximo (jitter humano)
-    const REQUEST_TIMEOUT = 30000; // ms para considerar que una petición falló
-    const SPINNER_TIMEOUT = 30000; // ms máximo de espera a que desaparezca el spinner
+    const REQUEST_TIMEOUT = 35000; // ms para considerar que una petición falló
+    const SPINNER_TIMEOUT = 35000; // ms máximo de espera a que desaparezca el spinner
     const MAX_PAGE_RETRIES = 5; // reintentos si el servidor SIGEP o Turnstile se atora
     const AUTO_DOWNLOAD_INTERVAL = 5000; // auto-descarga cada N registros
 
@@ -48,10 +48,16 @@
 
     // ==========================================
     // DETECCIÓN INTELIGENTE DE SPINNER
+    // Cuando está activo: contiene .ball-pulse
+    // Cuando termina: queda vacío <spinner-http><!----></spinner-http>
     // ==========================================
     const isSpinnerActive = () => {
-        const spinner = document.querySelector('spinner-http .ball-pulse, spinner-http .posicion-spinner');
-        return !!spinner;
+        const spinner = document.querySelector('spinner-http');
+        if (!spinner) return false;
+        const ballPulse = spinner.querySelector('.ball-pulse, .posicion-spinner');
+        if (ballPulse) return true;
+        // Si tiene elementos hijos visibles que no sean solo comentarios
+        return spinner.children.length > 0;
     };
 
     const waitForSpinnerToFinish = async (timeoutMs = SPINNER_TIMEOUT) => {
@@ -67,7 +73,7 @@
         }
         // Margen para que Angular complete el ciclo de detección de cambios (ChangeDetection)
         if (wasActive) {
-            await sleep(400);
+            await sleep(500);
         }
     };
 
@@ -238,7 +244,7 @@
                 box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
                 font-family: system-ui, -apple-system, sans-serif;
                 font-size: 13px;
-                width: 320px;
+                width: 330px;
                 border: 1px solid #334155;
             `;
             hud.innerHTML = `
@@ -247,18 +253,18 @@
                     <span id="hud-status-badge" style="background:#0284c7; padding:2px 8px; border-radius:6px; font-size:11px; font-weight:bold;">Iniciando</span>
                 </div>
                 <div style="margin-bottom:4px; display:flex; justify-content:space-between;">
-                    <span>Registros:</span>
+                    <span>Registros acumulados:</span>
                     <strong id="hud-records" style="color:#4ade80;">0</strong>
                 </div>
                 <div style="margin-bottom:4px; display:flex; justify-content:space-between;">
                     <span>Página / Total:</span>
-                    <strong id="hud-page">0 / --</strong>
+                    <strong id="hud-page">1 / --</strong>
                 </div>
                 <div style="margin-bottom:4px; display:flex; justify-content:space-between;">
                     <span>Tiempo estimado (ETA):</span>
                     <strong id="hud-eta">Calculando...</strong>
                 </div>
-                <div style="margin-bottom:10px; font-size:11px; color:#94a3b8;" id="hud-detail">
+                <div style="margin-bottom:10px; font-size:11px; color:#94a3b8; word-break:break-word;" id="hud-detail">
                     Esperando datos...
                 </div>
                 <div style="display:flex; gap:6px;">
@@ -301,14 +307,14 @@
     };
 
     // ==========================================
-    // DOM FALLBACK (Por si la primera página ya cargó)
+    // DOM EXTRACCIÓN Y PÁGINA ACTIVA
     // ==========================================
     const extractFromDOM = () => {
         const rows = document.querySelectorAll('#tablaValues tbody tr');
         const extracted = [];
         rows.forEach(row => {
             const cols = row.querySelectorAll('td');
-            if (cols.length >= 10) {
+            if (cols.length >= 10 && !row.innerText.includes('No hay datos')) {
                 const rec = {
                     entidad: cols[0].innerText.trim(),
                     unidadOrganizacional: cols[1].innerText.trim(),
@@ -327,13 +333,22 @@
         return extracted;
     };
 
+    const getActivePageNumber = () => {
+        const activeLi = document.querySelector('li.pagination-page.active a');
+        if (activeLi) {
+            const num = parseInt(activeLi.innerText.trim(), 10);
+            if (!isNaN(num) && num > 0) return num;
+        }
+        return null;
+    };
+
     // ==========================================
     // ESPERA Y GESTIÓN DE BOTÓN SIGUIENTE
     // ==========================================
-    const waitForNextButtonClickable = async (timeoutMs = 15000) => {
+    const waitForNextButtonClickable = async (timeoutMs = 25000) => {
         const start = Date.now();
         while (Date.now() - start < timeoutMs) {
-            // 1. Primero esperar a que cualquier spinner HTTP termine por completo
+            // 1. Esperar a que el spinner desaparezca totalmente
             await waitForSpinnerToFinish(timeoutMs);
 
             // 2. Verificar estado del botón siguiente
@@ -391,9 +406,9 @@
     });
 
     // 2. Esperar si la página está cargando inicialmente
-    await waitForSpinnerToFinish(15000);
+    await waitForSpinnerToFinish(20000);
 
-    // 3. Comprobar / automatizar filtro de estado 'Todos'
+    // 3. Ajustar filtro Estado: Todos
     try {
         const estadoBtn = Array.from(document.querySelectorAll('.btn-group button'))
             .find(b => b.innerText.includes('Estado:'));
@@ -405,21 +420,49 @@
             const todosOption = Array.from(parentGroup.querySelectorAll('.dropdown-item'))
                 .find(el => el.innerText.trim() === 'Todos');
             if (todosOption) {
+                // Preparar escucha si este cambio detona petición
+                const filterPromise = waitForNextApiResponse(15000).catch(() => null);
                 todosOption.click();
                 console.log("✅ Filtro 'Estado: Todos' seleccionado.");
-                await waitForSpinnerToFinish(15000);
-                await sleep(MIN_PAGE_DELAY);
+                await filterPromise;
+                await waitForSpinnerToFinish(20000);
             }
         }
     } catch (e) {
         console.warn("⚠️ No se pudo ajustar automáticamente el dropdown de Estado:", e);
     }
 
-    // 4. Capturar primera página si ya está renderizada en el DOM
-    const initialDomRows = extractFromDOM();
-    if (initialDomRows.length > 0) {
+    // 4. ASEGURAR CARGA DE PÁGINA 1
+    // Si la tabla no tiene datos aún, forzar búsqueda o esperar a que llegue
+    let initialRows = extractFromDOM();
+    if (initialRows.length === 0) {
+        console.log("⏳ Esperando datos iniciales de la Página 1...");
+        updateHUD({ status: "Cargando", detail: "Esperando registros de la página 1..." });
+
+        const searchSubmitBtn = document.querySelector('button[type="submit"]');
+        const firstPagePromise = waitForNextApiResponse(30000).catch(() => null);
+
+        if (searchSubmitBtn) {
+            console.log("🔍 Disparando búsqueda inicial...");
+            searchSubmitBtn.click();
+        }
+
+        await firstPagePromise;
+        await waitForSpinnerToFinish(25000);
+
+        // Espera de confirmación en el DOM
+        let waitAttempts = 0;
+        while (initialRows.length === 0 && waitAttempts < 15) {
+            await sleep(500);
+            initialRows = extractFromDOM();
+            waitAttempts++;
+        }
+    }
+
+    // Guardar registros de la primera página
+    if (initialRows.length > 0) {
         const toSave = [];
-        initialDomRows.forEach(rec => {
+        initialRows.forEach(rec => {
             const id = generateUniqueId(rec);
             if (!window.sigepDataMap.has(id)) {
                 rec.id = id;
@@ -429,22 +472,31 @@
         });
         if (toSave.length > 0) {
             await saveRecordsToDB(db, toSave);
-            console.log(`📥 Capturados ${toSave.length} registros iniciales del DOM.`);
+            console.log(`📥 Registrados ${toSave.length} items de la Página 1.`);
         }
+    } else {
+        console.warn("⚠️ La Página 1 aún no tiene datos. Inicia la búsqueda manualmente en el portal si no arrancó.");
     }
 
     // 5. Bucle principal de paginación
     window.__sigepScrapingActive = true;
     window.__sigepScrapingPaused = false;
 
-    // Detectar página inicial desde el DOM si es posible
-    const activePageEl = document.querySelector('li.pagination-page.active a');
-    let currentPage = activePageEl ? (parseInt(activePageEl.innerText.trim(), 10) || 1) : 1;
+    let currentPage = getActivePageNumber() || 1;
     let totalItems = 100000;
     let totalPages = Math.ceil(totalItems / 10);
     let sessionStartTime = Date.now();
     let initialCount = window.sigepDataMap.size;
     let lastAutoDownloadCount = initialCount;
+
+    console.log(`🏁 Iniciando paginación continua a partir de la página ${currentPage}...`);
+    updateHUD({
+        records: window.sigepDataMap.size,
+        page: currentPage,
+        totalPages: totalPages,
+        status: "Iniciando",
+        detail: `Página actual: ${currentPage}. Buscando siguiente...`
+    });
 
     while (window.__sigepScrapingActive) {
         // Soporte de pausa interactiva
@@ -454,26 +506,29 @@
         }
         if (!window.__sigepScrapingActive) break;
 
+        // Comprobación segura de fin de páginas (SOLO si realmente superamos totalPages)
+        if (totalPages > 1 && currentPage >= totalPages) {
+            console.log(`🎉 Fin real alcanzado: procesadas todas las ${totalPages} páginas.`);
+            updateHUD({ status: "Finalizado", detail: `Total ${totalPages} páginas completadas.` });
+            break;
+        }
+
         // Esperar a que el spinner desaparezca y el botón 'Siguiente' esté habilitado
         updateHUD({
             status: isSpinnerActive() ? "Cargando..." : "Esperando botón",
-            detail: isSpinnerActive() ? "Esperando a que finalice la carga de datos..." : `Buscando página ${currentPage + 1}...`
+            detail: isSpinnerActive() ? "Esperando que SIGEP complete petición..." : `Preparando salto a página ${currentPage + 1}...`
         });
 
-        const nextBtn = await waitForNextButtonClickable(15000);
+        const nextBtn = await waitForNextButtonClickable(25000);
         if (!nextBtn) {
-            // Si el botón no está disponible, comprobar si realmente estamos al final
-            await waitForSpinnerToFinish(10000);
-            const checkLi = document.querySelector('li.pagination-next');
-            if (!checkLi || checkLi.classList.contains('disabled') || currentPage >= totalPages) {
-                console.log("🏁 Fin de los datos alcanzado.");
-                updateHUD({ status: "Finalizado", detail: "Todas las páginas fueron procesadas." });
+            // Verificar si es el final de verdad
+            if (totalPages > 1 && currentPage >= totalPages) {
+                console.log("🏁 Última página alcanzada.");
                 break;
-            } else {
-                console.warn("⚠️ Botón 'Siguiente' no respondió a tiempo. Reintentando ciclo...");
-                await sleep(2000);
-                continue;
             }
+            console.warn(`⚠️ Botón 'Siguiente' aún bloqueado en página ${currentPage}. Reintentando espera...`);
+            await sleep(2000);
+            continue;
         }
 
         let pageSuccess = false;
@@ -498,7 +553,9 @@
                 const json = apiResult.json;
 
                 if (json && json.lista) {
-                    currentPage++;
+                    // Actualizar página con la reportada por Angular si está disponible
+                    currentPage = getActivePageNumber() || (currentPage + 1);
+
                     if (json.numRegistros) {
                         totalItems = json.numRegistros;
                         totalPages = Math.ceil(totalItems / 10);
@@ -548,7 +605,7 @@
                         lastAutoDownloadCount = currentTotal;
                     }
 
-                    // 4. CRUCIAL: Esperar a que Angular procese los datos y apague el spinner
+                    // 4. CRUCIAL: Esperar a que Angular procese los datos y apague el spinner (.ball-pulse)
                     await waitForSpinnerToFinish(SPINNER_TIMEOUT);
 
                     pageSuccess = true;
@@ -562,7 +619,7 @@
                     status: "Reintentando",
                     detail: `Fallo temporal: ${err.message}. Esperando ${3 * retryAttempt}s...`
                 });
-                await waitForSpinnerToFinish(10000);
+                await waitForSpinnerToFinish(15000);
                 await sleep(3000 * retryAttempt);
             }
         }
