@@ -7,6 +7,17 @@
         return `${record.entidad}-${record.nombre}-${record.cargo}-${record.fechaInicio}`.replace(/\s+/g, '').toLowerCase();
     };
 
+    const formatTime = (ms) => {
+        if (ms < 0) return "0s";
+        const totalSecs = Math.floor(ms / 1000);
+        const h = Math.floor(totalSecs / 3600);
+        const m = Math.floor((totalSecs % 3600) / 60);
+        const s = totalSecs % 60;
+        if (h > 0) return `${h}h ${m}m ${s}s`;
+        if (m > 0) return `${m}m ${s}s`;
+        return `${s}s`;
+    };
+
     // Función para esperar elementos en el DOM
     const waitForElement = (selector, timeout = 15000) => {
         return new Promise((resolve, reject) => {
@@ -83,14 +94,19 @@
 
     console.log(`📂 Iniciando con ${window.sigepDataMap.size} registros guardados previamente.`);
 
+    const TOTAL_ESTIMADOS = 100000;
+    let sessionStartTime = Date.now();
+    let initialSessionRecords = window.sigepDataMap.size;
+
     let scrapingActive = true;
     let pageStagnationCounter = 0;
 
     while (scrapingActive) {
         try {
             console.log(`⏳ Esperando carga de la tabla...`);
-            await waitForElement('#tablaValues tbody tr', 15000);
-            await sleep(PAGE_DELAY);
+            const tbody = await waitForElement('#tablaValues tbody', 15000);
+            const oldTableText = tbody.innerText; // Guardamos el texto para la Espera Inteligente
+            await sleep(500); // Pequeño margen para renderizado inicial
 
             const rows = document.querySelectorAll('#tablaValues tbody tr');
             let newRecordsAddedThisPage = 0;
@@ -120,7 +136,19 @@
                 }
             });
 
-            console.log(`📊 Leídas ${rows.length} filas. Nuevos registros únicos añadidos: ${newRecordsAddedThisPage}`);
+            const currentTotal = window.sigepDataMap.size;
+            const sessionAdded = currentTotal - initialSessionRecords;
+            let etaString = "Calculando...";
+            
+            if (sessionAdded > 0) {
+                const elapsedMs = Date.now() - sessionStartTime;
+                const msPerRecord = elapsedMs / sessionAdded;
+                const recordsRemaining = Math.max(0, TOTAL_ESTIMADOS - currentTotal);
+                const etaMs = recordsRemaining * msPerRecord;
+                etaString = formatTime(etaMs);
+            }
+
+            console.log(`📊 Nuevos: ${newRecordsAddedThisPage} | Total: ${currentTotal}/${TOTAL_ESTIMADOS} | ETA: ${etaString}`);
 
             if (newRecordsAddedThisPage === 0) {
                 pageStagnationCounter++;
@@ -154,7 +182,23 @@
 
             console.log("➡️ Haciendo clic en siguiente...");
             nextLink.click();
-            await sleep(PAGE_DELAY);
+            
+            let waitStart = Date.now();
+            let tableChanged = false;
+            
+            // Evaluamos la tabla cada medio segundo (hasta 15s) para ver si Angular ya actualizó los datos
+            while (Date.now() - waitStart < 15000) {
+                await sleep(500);
+                const currentTbody = document.querySelector('#tablaValues tbody');
+                if (currentTbody && currentTbody.innerText !== oldTableText && currentTbody.innerText.trim() !== "") {
+                    tableChanged = true;
+                    break;
+                }
+            }
+            
+            if (!tableChanged) {
+                console.warn("⚠️ La tabla no cambió visualmente tras 15s. Retomando bucle (el servidor de SIGEP puede estar muy lento).");
+            }
 
         } catch (error) {
             console.error("❌ Error en el bucle principal:", error);
