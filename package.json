@@ -1,0 +1,14 @@
+{
+  "name": "sigep-scraper-service",
+  "version": "1.0.0",
+  "description": "SIGEP data extraction service with browser automation and noVNC",
+  "main": "server_scraper.js",
+  "scripts": {
+    "start": "node server_scraper.js"
+  },
+  "dependencies": {
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "puppeteer": "^22.12.1"
+  }
+}

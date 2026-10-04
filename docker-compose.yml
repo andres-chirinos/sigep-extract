@@ -1,0 +1,18 @@
+services:
+  sigep-scraper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sigep-scraper
+    restart: unless-stopped
+    ports:
+      # Puerto para ver e interactuar con el navegador web en tiempo real
+      - "6080:6080"
+    environment:
+      - RESOLUTION=1600x1000x24
+      - OUTPUT_FILE=/app/data/sigep_export.jsonl
+      - USER_DATA_DIR=/app/data/browser_profile
+    volumes:
+      # Montaje persistente para guardar datos extraídos y perfil de navegador
+      - ./data:/app/data
+    shm_size: '2gb' # Requerido para que Chrome no crashee con renderizado pesado
