@@ -9,10 +9,13 @@ services:
       # Puerto para ver e interactuar con el navegador web en tiempo real
       - "6080:6080"
     environment:
+      - DISPLAY=:99
       - RESOLUTION=1600x1000x24
       - OUTPUT_FILE=/app/data/sigep_export.jsonl
       - USER_DATA_DIR=/app/data/browser_profile
     volumes:
       # Montaje persistente para guardar datos extraídos y perfil de navegador
       - ./data:/app/data
+      - ./server_scraper.js:/app/server_scraper.js:ro
+      - ./entrypoint.sh:/app/entrypoint.sh:ro
     shm_size: '2gb' # Requerido para que Chrome no crashee con renderizado pesado
