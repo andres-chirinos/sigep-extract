@@ -186,10 +186,11 @@
             let waitStart = Date.now();
             let tableChanged = false;
             
-            // Evaluamos la tabla cada medio segundo (hasta 15s) para ver si Angular ya actualizó los datos
-            while (Date.now() - waitStart < 15000) {
+            // Evaluamos la tabla cada medio segundo (hasta 60s) para ver si Angular ya actualizó los datos
+            while (Date.now() - waitStart < 60000) {
                 await sleep(500);
                 const currentTbody = document.querySelector('#tablaValues tbody');
+                // Comprobamos que la tabla exista, haya cambiado su texto anterior y no esté vacía
                 if (currentTbody && currentTbody.innerText !== oldTableText && currentTbody.innerText.trim() !== "") {
                     tableChanged = true;
                     break;
@@ -197,7 +198,9 @@
             }
             
             if (!tableChanged) {
-                console.warn("⚠️ La tabla no cambió visualmente tras 15s. Retomando bucle (el servidor de SIGEP puede estar muy lento).");
+                console.warn("⚠️ La tabla no cambió visualmente tras 60 segundos. El servidor está atascado o tardando demasiado. Guardando progreso y finalizando.");
+                scrapingActive = false;
+                break; // Cortamos el bucle aquí para hacer el guardado seguro
             }
 
         } catch (error) {
