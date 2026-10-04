@@ -1,9 +1,14 @@
 (async function() {
     const STORAGE_KEY = 'sigep_scraping_data';
-    const PAGE_DELAY = 2000; // Tiempo de espera ajustable para asegurar que cargue la tabla (en milisegundos)
+    const PAGE_DELAY = 2500; // Aumentado ligeramente para dar margen a la carga de datos
 
-    // Función auxiliar para esperar elementos en el DOM
-    const waitForElement = (selector, timeout = 10000) => {
+    // Función auxiliar para generar un "hash" único simple basado en el contenido del registro
+    const generateUniqueId = (record) => {
+        // Concatenamos campos clave para formar un string único que identifique la fila
+        return `${record.entidad}-${record.nombre}-${record.cargo}-${record.fechaInicio}`.replace(/\s+/g, '').toLowerCase();
+    };
+
+    const waitForElement = (selector, timeout = 15000) => {
         return new Promise((resolve, reject) => {
             const start = Date.now();
             const interval = setInterval(() => {
@@ -13,56 +18,59 @@
                     resolve(el);
                 } else if (Date.now() - start > timeout) {
                     clearInterval(interval);
-                    reject(new Error(`Timeout esperando por el selector: ${selector}`));
+                    reject(new Error(`Timeout esperando por: ${selector}`));
                 }
-            }, 200);
+            }, 500);
         });
     };
 
-    // Función para pausar la ejecución
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-    console.log("🚀 Iniciando script de extracción SIGEP...");
+    console.log("🚀 Iniciando script de extracción SIGEP (Versión Anti-Duplicados)...");
 
-    // 1. Intentar seleccionar "Todos" en el desplegable de Estado si no está seleccionado
+    // 1. Configurar filtro de Estado
     try {
-        const dropdownToggle = document.querySelector('.btn-group[dropdown] button, button.dropdown-toggle');
+        const dropdownToggle = document.querySelector('.btn-group[dropdown] button');
         if (dropdownToggle && !dropdownToggle.innerText.includes('Todos')) {
             dropdownToggle.click();
             await sleep(500);
-            const items = Array.from(document.querySelectorAll('.dropdown-menu .dropdown-item'));
-            const todosItem = items.find(el => el.innerText.trim() === 'Todos');
+            const todosItem = Array.from(document.querySelectorAll('.dropdown-menu .dropdown-item'))
+                                   .find(el => el.innerText.trim() === 'Todos');
             if (todosItem) {
                 todosItem.click();
-                console.log("✅ Filtro 'Estado: Todos' seleccionado correctamente.");
+                console.log("✅ Filtro 'Estado: Todos' aplicado.");
                 await sleep(PAGE_DELAY);
             }
         }
     } catch (e) {
-        console.warn("⚠️ No se pudo automatizar la selección del desplegable de estado (continúa con el estado actual):", e);
+        console.warn("⚠️ No se pudo automatizar el filtro de estado:", e);
     }
 
-    // Recuperar datos previos de localStorage si existen
-    let extractedData = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-    let pageCount = parseInt(localStorage.getItem(STORAGE_KEY + '_page') || '1', 10);
-    console.log(`📂 Datos recuperados de sesión anterior: ${extractedData.length} registros. Página actual aprox: ${pageCount}`);
+    // 2. Cargar datos previos. 
+    // Usaremos un Map para evitar duplicados fácilmente (Clave: Hash Único, Valor: Objeto del registro)
+    let rawStoredData = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    let dataMap = new Map();
+    
+    // Rellenar el Map con los datos previos para filtrar
+    rawStoredData.forEach(item => {
+        const id = generateUniqueId(item);
+        dataMap.set(id, item);
+    });
+
+    console.log(`📂 Iniciando con ${dataMap.size} registros únicos guardados de sesiones anteriores.`);
 
     let scrapingActive = true;
+    let pageStagnationCounter = 0; // Para detectar si nos quedamos atrapados en la misma página
 
     while (scrapingActive) {
         try {
-            console.log(`⏳ Esperando a que cargue la tabla en la página...`);
-            await waitForElement('#tablaValues tbody', 15000);
-            await sleep(PAGE_DELAY); // Estabilizar renderizado de filas
+            console.log(`⏳ Esperando carga de la tabla...`);
+            await waitForElement('#tablaValues tbody tr', 15000);
+            await sleep(PAGE_DELAY);
 
             const rows = document.querySelectorAll('#tablaValues tbody tr');
-            console.log(`📊 Encontradas ${rows.length} filas en la página actual.`);
+            let newRecordsAddedThisPage = 0;
 
-            if (rows.length === 0) {
-                console.warn("⚠️ No se encontraron filas. Puede que la tabla esté vacía o cargando.");
-            }
-
-            let newRecordsOnPage = 0;
             rows.forEach((row) => {
                 const cols = row.querySelectorAll('td');
                 if (cols.length >= 10) {
@@ -78,64 +86,75 @@
                         fechaFin: cols[8].innerText.trim(),
                         estado: cols[9].innerText.trim()
                     };
-                    extractedData.push(record);
-                    newRecordsOnPage++;
+
+                    const recordId = generateUniqueId(record);
+                    
+                    // Comprobación clave: ¿Este registro ya existe en nuestro almacenamiento?
+                    if (!dataMap.has(recordId)) {
+                        dataMap.set(recordId, record);
+                        newRecordsAddedThisPage++;
+                    }
                 }
             });
 
-            // Guardar estado actual en localStorage de forma persistente
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(extractedData));
-            localStorage.setItem(STORAGE_KEY + '_page', pageCount);
-            console.log(`💾 Progreso guardado. Total acumulado: ${extractedData.length} registros.`);
+            console.log(`📊 Leídas ${rows.length} filas. Nuevos registros únicos añadidos: ${newRecordsAddedThisPage}`);
 
-            // Buscar el botón de "Siguiente"
-            // Comprobamos si el elemento li padre o el botón tienen clase disabled o similar
-            const nextLi = document.querySelector('li.pagination-next');
-            const nextButton = document.querySelector('li.pagination-next a.page-link, a.page-link'); // Ajustar según selector exacto
-            
-            // Buscar específicamente el botón que contenga "Siguiente"
-            const allLinks = Array.from(document.querySelectorAll('a.page-link, ul.pagination li a'));
+            // Mecanismo de seguridad: Si no añadimos ningún registro nuevo y estamos iterando, 
+            // podríamos estar en la última página o la tabla no refrescó correctamente.
+            if (newRecordsAddedThisPage === 0) {
+                pageStagnationCounter++;
+                if(pageStagnationCounter > 2) {
+                    console.log("⚠️ 3 páginas consecutivas sin datos nuevos. Abortando para evitar bucle infinito.");
+                    scrapingActive = false;
+                    break;
+                }
+            } else {
+                pageStagnationCounter = 0; // Reiniciar contador si encontramos datos frescos
+            }
+
+            // Convertir el Map de vuelta a un Array y guardar en LocalStorage
+            const updatedDataArray = Array.from(dataMap.values());
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedDataArray));
+            console.log(`💾 Guardado en LocalStorage. Total general: ${updatedDataArray.length} registros.`);
+
+            // 3. Lógica de Paginación Avanzada
+            const allLinks = Array.from(document.querySelectorAll('a.page-link, .pagination-next a, .page-item a'));
             const nextLink = allLinks.find(a => a.innerText.trim().toLowerCase().includes('siguiente') || a.innerText.trim() === '»');
 
             if (!nextLink) {
-                console.log("🏁 No se encontró el botón 'Siguiente'. Fin del proceso.");
+                console.log("🏁 No se encontró enlace 'Siguiente'. Fin del recorrido.");
                 scrapingActive = false;
                 break;
             }
 
             const parentLi = nextLink.closest('li');
             if (parentLi && (parentLi.classList.contains('disabled') || parentLi.classList.contains('active'))) {
-                console.log("🏁 El botón de siguiente está deshabilitado o inactivo. Fin de la paginación.");
+                console.log("🏁 El botón 'Siguiente' está deshabilitado. Última página alcanzada.");
                 scrapingActive = false;
                 break;
             }
 
-            // Hacer clic en siguiente
-            console.pas ? console.pas("➡️ Avanzando a la siguiente página...") : console.log("➡️ Avanzando a la siguiente página...");
+            console.log("➡️ Haciendo clic en siguiente...");
             nextLink.click();
-            pageCount++;
-            await sleep(PAGE_DELAY);
+            await sleep(PAGE_DELAY); // Espera crucial para que Angular destruya e inicialice la nueva tabla
 
         } catch (error) {
-            console.error("❌ Ocurrió un error durante la extracción en esta iteración:", error);
-            scrapingActive = false;
+            console.error("❌ Error en el bucle principal:", error);
+            console.log("Intentando recuperar la tabla en 5 segundos...");
+            await sleep(5000); // Intento de recuperación ante caídas de red breves
         }
     }
 
-    console.log("🎉 ¡Extracción completada con éxito!");
-    console.log(`📦 Total de registros extraídos: ${extractedData.length}`);
+    // 4. Descarga Final
+    const finalData = Array.from(dataMap.values());
+    console.log(`🎉 Proceso terminado. Generando archivo de descarga con ${finalData.length} registros.`);
 
-    // Descargar automáticamente el archivo JSON al terminar
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(extractedData, null, 2));
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(finalData, null, 2));
     const downloadAnchor = document.createElement('a');
     downloadAnchor.setAttribute("href", dataStr);
     downloadAnchor.setAttribute("download", `sigep_personal_${Date.now()}.json`);
     document.body.appendChild(downloadAnchor);
     downloadAnchor.click();
     downloadAnchor.remove();
-
-    // Limpiar localStorage opcionalmente al finalizar por completo:
-    // localStorage.removeItem(STORAGE_KEY);
-    // localStorage.removeItem(STORAGE_KEY + '_page');
 
 })();
