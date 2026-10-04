@@ -3,10 +3,9 @@ const fs = require('fs');
 const path = require('path');
 
 const OUTPUT_FILE = process.env.OUTPUT_FILE || '/app/data/sigep_export.jsonl';
-const USER_DATA_DIR = process.env.USER_DATA_DIR || '/app/data/browser_profile';
 const TARGET_URL = 'https://sigep.gob.bo/rsportaltransparencia/#/portalHome/personal';
 const BATCH_SIZE = 10;
-const DELAY_BETWEEN_PAGES = 1800; // ms para no saturar Cloudflare
+const DELAY_BETWEEN_PAGES = 1800; // ms
 
 // Asegurar directorios
 const dataDir = path.dirname(OUTPUT_FILE);
@@ -27,42 +26,46 @@ if (fs.existsSync(OUTPUT_FILE)) {
                 const rec = JSON.parse(line);
                 const id = [
                     rec.entidad || '',
-                    rec.unidadOrganizacional || '',
-                    rec.nombre || '',
-                    rec.cargo || '',
-                    rec.puestoFuncion || '',
-                    rec.tipo || '',
-                    rec.nivelSalarialMonto || '',
-                    rec.fechaInicio || '',
+                    rec.siglaEntidad || '',
+                    rec.descUnidad || '',
+                    rec.razonSocial || (rec.nombres + ' ' + rec.primerApellido) || '',
+                    rec.descCargo || '',
+                    rec.monto || '',
+                    rec.fechaIni || '',
                     rec.fechaFin || '',
-                    rec.estado || ''
+                    rec.apiEstado || ''
                 ].join('|').toLowerCase().replace(/\s+/g, ' ').trim();
                 existingIds.add(id);
                 totalSaved++;
             } catch (e) {}
         }
-        console.log(`[Servidor] Archivo existente detectado. ${totalSaved} registros previos cargados.`);
+        console.log(`[Servidor] Archivo previo cargado: ${totalSaved} registros existentes.`);
     } catch (e) {
         console.warn('[Servidor] Error leyendo archivo previo:', e.message);
     }
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 async function run() {
-    console.log('[Servidor] Lanzando Chromium con soporte anti-bot y display virtual :99...');
+    console.log('[Servidor] Iniciando Google Chrome con aceleración WebGL y display virtual :99...');
 
     const browser = await puppeteer.launch({
-        headless: false, // GUI interactiva visible en http://localhost:6080/vnc.html
+        headless: false,
         executablePath: process.env.CHROME_BIN || '/usr/bin/google-chrome-stable',
         ignoreDefaultArgs: ['--enable-automation'],
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-blink-features=AutomationControlled',
+            '--ignore-gpu-blocklist',
+            '--use-gl=angle',
+            '--use-angle=swiftshader',
+            '--enable-webgl',
             '--window-size=1600,1000',
             '--no-first-run',
             '--no-default-browser-check'
         ],
-        userDataDir: USER_DATA_DIR,
         defaultViewport: { width: 1600, height: 1000 }
     });
 
@@ -72,171 +75,171 @@ async function run() {
     page.on('console', msg => console.log(`[Browser Console ${msg.type()}]`, msg.text()));
     page.on('pageerror', err => console.error('[Browser Error]', err.message));
 
-    // Exponer función para que el navegador guarde por lotes directo al archivo
-    await page.exposeFunction('saveBatchToDisk', (records, pageNum, totalRegs) => {
-        if (!records || records.length === 0) return 0;
-        let newCount = 0;
-        let linesToWrite = '';
-
-        for (const rec of records) {
-            const id = [
-                rec.entidad || '',
-                rec.unidadOrganizacional || '',
-                rec.nombre || '',
-                rec.cargo || '',
-                rec.puestoFuncion || '',
-                rec.tipo || '',
-                rec.nivelSalarialMonto || '',
-                rec.fechaInicio || '',
-                rec.fechaFin || '',
-                rec.estado || ''
-            ].join('|').toLowerCase().replace(/\s+/g, ' ').trim();
-
-            if (!existingIds.has(id)) {
-                existingIds.add(id);
-                linesToWrite += JSON.stringify(rec) + '\n';
-                newCount++;
-                totalSaved++;
-            }
-        }
-
-        if (linesToWrite.length > 0) {
-            fs.appendFileSync(OUTPUT_FILE, linesToWrite, 'utf8');
-        }
-
-        console.log(`[Servidor] Pág ${pageNum} | +${newCount} nuevos | Total acumulado: ${totalSaved} / ${totalRegs || '100000'}`);
-        return newCount;
-    });
-
-    console.log(`[Servidor] Navegando al portal: ${TARGET_URL}...`);
+    console.log(`[Servidor] Navegando a ${TARGET_URL}...`);
     await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 45000 });
 
-    console.log('[Servidor] Esperando sesión y autenticación anónima SIGEP...');
+    console.log('[Servidor] Esperando sesión SIGEP...');
     await page.waitForFunction(() => sessionStorage.getItem('ps_accessToken') !== null, { timeout: 30000 });
+    console.log('[Servidor] Sesión establecida.');
 
-    console.log('[Servidor] Sesión iniciada con éxito. Comenzando extracción masiva...');
-
-    // Ejecutar extractor continuo dentro de la sesión de Chrome
-    await page.evaluate(async (startPageNumber) => {
-        const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-        const getTurnstileToken = () => {
-            return new Promise((resolve, reject) => {
-                const container = document.createElement('div');
-                document.body.appendChild(container);
-                try {
-                    window.turnstile.render(container, {
-                        sitekey: '0x4AAAAAACHbHIeBTaDEpzYc',
-                        callback: (token) => {
-                            container.remove();
-                            resolve(token);
-                        },
-                        'error-callback': (err) => {
-                            container.remove();
-                            reject(err);
-                        }
-                    });
-                } catch (e) {
-                    container.remove();
-                    reject(e);
-                }
-            });
-        };
-
-        // Crear HUD flotante de estado en la pantalla de noVNC
+    // Configurar HUD inicial en pantalla visible vía noVNC
+    await page.evaluate(() => {
         const hud = document.createElement('div');
         hud.id = 'server-hud';
-        hud.style.cssText = 'position:fixed;top:15px;right:15px;z-index:999999;background:#0f172a;color:#f8fafc;padding:12px 18px;border-radius:10px;font-family:sans-serif;font-size:13px;border:1px solid #38bdf8;box-shadow:0 8px 20px rgba(0,0,0,0.5);width:320px;';
+        hud.style.cssText = 'position:fixed;top:15px;right:15px;z-index:999999;background:#0f172a;color:#f8fafc;padding:14px 20px;border-radius:10px;font-family:sans-serif;font-size:13px;border:1px solid #38bdf8;box-shadow:0 8px 20px rgba(0,0,0,0.5);width:340px;';
         hud.innerHTML = `
-            <div style="font-weight:bold;color:#38bdf8;margin-bottom:6px;">🚀 Extractor Autónomo Activo</div>
+            <div style="font-weight:bold;color:#38bdf8;margin-bottom:6px;">🚀 Extractor Autónomo SIGEP</div>
             <div id="hud-status" style="color:#4ade80;">Iniciando extracción...</div>
             <div id="hud-stats" style="margin-top:4px;color:#94a3b8;font-size:12px;">Página 1</div>
         `;
         document.body.appendChild(hud);
+    });
 
-        const updateHUD = (status, stats) => {
-            document.getElementById('hud-status').innerText = status;
-            document.getElementById('hud-stats').innerText = stats;
-        };
+    let pageNum = Math.floor(totalSaved / BATCH_SIZE) + 1;
+    let totalRegistros = 1000636;
+    let consecutiveErrors = 0;
 
-        let pageNum = startPageNumber || 1;
-        let totalRegistros = 100000;
-        let consecutiveErrors = 0;
+    console.log(`[Servidor] Comenzando extracción desde página ${pageNum}...`);
 
-        while (true) {
-            // Verificar fin de páginas
-            if (pageNum > Math.ceil(totalRegistros / 10) && totalRegistros > 0) {
-                console.log(`[Browser] Extracción finalizada en página ${pageNum - 1}.`);
-                updateHUD('Finalizado con éxito', `Total: ${totalRegistros} registros extraídos.`);
-                break;
-            }
+    while (true) {
+        const totalPages = Math.ceil(totalRegistros / BATCH_SIZE);
+        if (pageNum > totalPages && totalRegistros > 0) {
+            console.log(`[Servidor] ¡Extracción completa! Total páginas: ${pageNum - 1}`);
+            break;
+        }
 
-            try {
-                updateHUD(`Extrayendo página ${pageNum}...`, `Turnstile challenge en progreso...`);
+        try {
+            // Actualizar HUD
+            await page.evaluate((p, totP, totRecs) => {
+                const s = document.getElementById('hud-status');
+                const st = document.getElementById('hud-stats');
+                if (s) s.innerText = `Extrayendo página ${p} de ${totP}...`;
+                if (st) st.innerText = `Total extraído: ${totRecs} registros`;
+            }, pageNum, totalPages, totalSaved);
 
-                // 1. Obtener token de Turnstile generado por Cloudflare en el navegador real
-                const captcha = await getTurnstileToken();
-                const bearer = sessionStorage.getItem('ps_accessToken');
-
-                // 2. Fetch autenticado a la API de personal (SP = Sin filtro, Todos)
-                const url = `/rsportaltransparencia/api/v1/persona/lista?tipoBusqueda=SP&draw=${pageNum}&estadoBusqueda=&tipoPersonalBusqueda=`;
-                const response = await fetch(url, {
-                    headers: {
-                        'Content-Type': 'application/json; charset=utf-8',
-                        'Authorization': 'bearer ' + bearer,
-                        'Captcha': captcha
+            // Obtener lote mediante Turnstile + API directa dentro de la sesión de Chrome
+            const result = await page.evaluate(async (p) => {
+                const getCaptcha = () => new Promise((resolve, reject) => {
+                    const c = document.createElement('div');
+                    document.body.appendChild(c);
+                    try {
+                        const wId = window.turnstile.render(c, {
+                            sitekey: '0x4AAAAAACHbHIeBTaDEpzYc',
+                            callback: (token) => {
+                                window.turnstile.remove(wId);
+                                c.remove();
+                                resolve(token);
+                            },
+                            'error-callback': (err) => {
+                                window.turnstile.remove(wId);
+                                c.remove();
+                                reject(err);
+                            }
+                        });
+                    } catch (e) {
+                        c.remove();
+                        reject(e);
                     }
                 });
 
-                if (response.status === 200) {
-                    const data = await response.json();
-                    if (data.numRegistros) {
-                        totalRegistros = data.numRegistros;
-                    }
+                const token = await getCaptcha();
+                const bearer = sessionStorage.getItem('ps_accessToken');
 
-                    if (data.lista && data.lista.length > 0) {
-                        await window.saveBatchToDisk(data.lista, pageNum, totalRegistros);
-                        consecutiveErrors = 0;
-                        updateHUD(`Página ${pageNum} procesada`, `+${data.lista.length} registros. Total: ${totalRegistros}`);
-                        pageNum++;
-                    } else {
-                        console.log(`[Browser] No se encontraron más registros en página ${pageNum}.`);
-                        break;
+                const url = `/rsportaltransparencia/api/v1/persona/lista?tipoBusqueda=SP&draw=${p}&estadoBusqueda=&tipoPersonalBusqueda=`;
+                const res = await fetch(url, {
+                    headers: {
+                        'Content-Type': 'application/json; charset=utf-8',
+                        'Authorization': 'bearer ' + bearer,
+                        'Captcha': token
                     }
-                } else if (response.status === 401) {
-                    console.warn(`[Browser] Error 401 en página ${pageNum}. Esperando renovación de sesión...`);
-                    updateHUD(`Error 401 en pág ${pageNum}`, 'Esperando renovación...');
-                    await sleep(4000);
-                    consecutiveErrors++;
+                });
+
+                if (res.status === 200) {
+                    const json = await res.json();
+                    const payload = json.data || json;
+                    return {
+                        ok: true,
+                        lista: payload.lista || [],
+                        numRegistros: payload.numRegistros
+                    };
                 } else {
-                    console.warn(`[Browser] Error HTTP ${response.status} en página ${pageNum}. Reintentando...`);
-                    updateHUD(`Error HTTP ${response.status}`, `Reintentando intento ${consecutiveErrors + 1}...`);
-                    await sleep(3000);
-                    consecutiveErrors++;
+                    return {
+                        ok: false,
+                        status: res.status
+                    };
+                }
+            }, pageNum);
+
+            if (result.ok) {
+                if (result.numRegistros) {
+                    totalRegistros = result.numRegistros;
                 }
 
-                if (consecutiveErrors >= 5) {
-                    console.error(`[Browser] 5 errores seguidos en página ${pageNum}. Pausando 15s...`);
-                    updateHUD('Pausa por errores', 'Esperando 15 segundos antes de reintentar...');
-                    await sleep(15000);
+                if (result.lista && result.lista.length > 0) {
+                    let newCount = 0;
+                    let linesToWrite = '';
+
+                    for (const rec of result.lista) {
+                        const id = [
+                            rec.entidad || '',
+                            rec.siglaEntidad || '',
+                            rec.descUnidad || '',
+                            rec.razonSocial || (rec.nombres + ' ' + rec.primerApellido) || '',
+                            rec.descCargo || '',
+                            rec.monto || '',
+                            rec.fechaIni || '',
+                            rec.fechaFin || '',
+                            rec.apiEstado || ''
+                        ].join('|').toLowerCase().replace(/\s+/g, ' ').trim();
+
+                        if (!existingIds.has(id)) {
+                            existingIds.add(id);
+                            linesToWrite += JSON.stringify(rec) + '\n';
+                            newCount++;
+                            totalSaved++;
+                        }
+                    }
+
+                    if (linesToWrite.length > 0) {
+                        fs.appendFileSync(OUTPUT_FILE, linesToWrite, 'utf8');
+                    }
+
+                    console.log(`[Servidor] Pág ${pageNum} | +${newCount} nuevos | Acumulado: ${totalSaved} / ${totalRegistros}`);
                     consecutiveErrors = 0;
+                    pageNum++;
+                } else {
+                    console.log(`[Servidor] No hay más registros en página ${pageNum}. Fin del listado.`);
+                    break;
                 }
-
-                // Pausa prudente entre llamadas
-                await sleep(1800 + Math.random() * 800);
-
-            } catch (err) {
-                console.error(`[Browser] Excepción en página ${pageNum}:`, err.message || err);
-                updateHUD('Error en llamada', `Excepción: ${err.message || err}`);
-                await sleep(4000);
+            } else if (result.status === 401) {
+                console.warn(`[Servidor] Error 401 en página ${pageNum}. Esperando renovación...`);
+                await sleep(5000);
+                consecutiveErrors++;
+            } else {
+                console.warn(`[Servidor] HTTP ${result.status} en página ${pageNum}. Reintentando...`);
+                await sleep(3000);
                 consecutiveErrors++;
             }
-        }
-    }, Math.floor(totalSaved / BATCH_SIZE) + 1);
 
-    console.log('[Servidor] Proceso de extracción completado exitosamente.');
+            if (consecutiveErrors >= 5) {
+                console.error(`[Servidor] 5 fallos consecutivos en pág ${pageNum}. Pausa preventiva de 20s...`);
+                await sleep(20000);
+                consecutiveErrors = 0;
+            }
+
+            // Delay prudente
+            await sleep(DELAY_BETWEEN_PAGES + Math.floor(Math.random() * 600));
+
+        } catch (err) {
+            console.error(`[Servidor] Error en página ${pageNum}:`, err.message || err);
+            consecutiveErrors++;
+            await sleep(4000);
+        }
+    }
+
+    console.log('[Servidor] Proceso de extracción finalizado con éxito.');
 }
 
 run().catch(err => {
-    console.error('[Servidor] Error crítico en ejecutor:', err);
+    console.error('[Servidor] Error crítico:', err);
 });
