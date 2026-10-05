@@ -31,5 +31,12 @@ echo "Iniciando noVNC (acceso web en http://localhost:6080/vnc.html)..."
 websockify --web /usr/share/novnc 6080 localhost:5900 > /dev/null 2>&1 &
 sleep 2
 
-echo "Iniciando proceso extractor Puppeteer..."
-exec node /app/server_scraper.js
+APP_MODE="${APP_MODE:-client}"
+
+if [ "$APP_MODE" = "scraper" ]; then
+    echo "Iniciando proceso Extractor Autónomo SIGEP..."
+    exec node /app/server_scraper.js
+else
+    echo "Iniciando Cliente General Anti-Bot (noVNC + Scripts + WARC)..."
+    exec node /app/client_runner.js
+fi

@@ -144,6 +144,28 @@ class S3SyncManager {
             return false;
         }
     }
+
+    async uploadArchives(archivesDir = '/app/data/archives') {
+        if (!this.enabled || !fs.existsSync(archivesDir)) return false;
+        const files = fs.readdirSync(archivesDir).filter(f => f.endsWith('.warc') || f.endsWith('.warc.gz'));
+        for (const file of files) {
+            const fullPath = path.join(archivesDir, file);
+            const s3Key = this.getKey(`archives/${file}`);
+            try {
+                const stream = fs.createReadStream(fullPath);
+                await this.client.send(new PutObjectCommand({
+                    Bucket: this.bucket,
+                    Key: s3Key,
+                    Body: stream,
+                    ContentType: file.endsWith('.gz') ? 'application/gzip' : 'application/warc'
+                }));
+                console.log(`[S3] Archivo WARC sincronizado: s3://${this.bucket}/${s3Key}`);
+            } catch (e) {
+                console.error(`[S3] Error subiendo WARC ${file}:`, e.message);
+            }
+        }
+        return true;
+    }
 }
 
 module.exports = new S3SyncManager();

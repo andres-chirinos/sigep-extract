@@ -1,13 +1,19 @@
 {
-  "name": "sigep-scraper-service",
+  "name": "antibot-warc-framework",
   "version": "1.0.0",
-  "description": "SIGEP data extraction service with browser automation and noVNC",
-  "main": "server_scraper.js",
+  "description": "Anti-bot web client with script execution, WARC 1.1 recording and WARC-to-Markdown processing",
+  "main": "client_runner.js",
   "scripts": {
-    "start": "node server_scraper.js"
+    "start": "node client_runner.js",
+    "scraper": "node server_scraper.js",
+    "warc2md": "node warc_to_markdown.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.600.0",
-    "puppeteer": "^22.12.1"
+    "cheerio": "^1.0.0",
+    "markdown-it": "^14.1.0",
+    "node-warc": "^3.0.0",
+    "puppeteer": "^22.12.1",
+    "turndown": "^7.2.0"
   }
 }

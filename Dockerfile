@@ -47,10 +47,13 @@ COPY package.json ./
 RUN npm install --omit=dev
 
 # Copiar scripts y entrypoint
+COPY client_runner.js ./
+COPY warc_recorder.js ./
+COPY warc_to_markdown.js ./
 COPY server_scraper.js ./
 COPY s3_sync.js ./
 COPY entrypoint.sh ./
-RUN chmod +x entrypoint.sh
+RUN chmod +x entrypoint.sh && mkdir -p /app/data/archives /app/scripts
 
 EXPOSE 6080 5900
 

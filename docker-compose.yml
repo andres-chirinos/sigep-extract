@@ -1,16 +1,26 @@
 services:
-  sigep-scraper:
+  antibot-client:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: sigep-scraper
+    container_name: antibot-client
     restart: unless-stopped
     ports:
-      # Puerto para ver e interactuar con el navegador web en tiempo real
+      # Acceso interactivo noVNC al navegador completo (Chrome + DevTools + Dock)
       - "6080:6080"
     environment:
       - DISPLAY=:99
       - RESOLUTION=1600x1000x24
+      # Modo: 'client' (navegador interactivo general con WARC) o 'scraper' (extractor autónomo SIGEP)
+      - APP_MODE=${APP_MODE:-client}
+      - START_URL=${START_URL:-https://sigep.gob.bo/rsportaltransparencia/#/portalHome/personal}
+      # Archivo Web (WARC ISO 28500)
+      - WARC_ENABLED=${WARC_ENABLED:-true}
+      - WARC_OUTPUT_DIR=/app/data/archives
+      - WARC_SYNC_INTERVAL_MINUTES=10
+      # Script opcional para auto-ejecutar al cargar (ej: extractor.js)
+      - AUTO_EXECUTE_SCRIPT=${AUTO_EXECUTE_SCRIPT:-}
+      # Parámetros del extractor si se usa APP_MODE=scraper
       - OUTPUT_FILE=/app/data/sigep_export.jsonl
       - DELAY_BETWEEN_PAGES=1800
       # Configuración S3 (AWS S3, Cloudflare R2, MinIO, Wasabi, etc.)
@@ -24,6 +34,10 @@ services:
       - S3_FORCE_PATH_STYLE=${S3_FORCE_PATH_STYLE:-false}
     volumes:
       - ./data:/app/data
+      - ./scripts:/app/scripts:ro
+      - ./client_runner.js:/app/client_runner.js:ro
+      - ./warc_recorder.js:/app/warc_recorder.js:ro
+      - ./warc_to_markdown.js:/app/warc_to_markdown.js:ro
       - ./server_scraper.js:/app/server_scraper.js:ro
       - ./s3_sync.js:/app/s3_sync.js:ro
       - ./entrypoint.sh:/app/entrypoint.sh:ro

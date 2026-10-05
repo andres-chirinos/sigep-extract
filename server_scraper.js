@@ -2,6 +2,7 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const s3Sync = require('./s3_sync');
+const warcRecorder = require('./warc_recorder');
 
 const OUTPUT_FILE = process.env.OUTPUT_FILE || '/app/data/sigep_export.jsonl';
 const TARGET_URL = 'https://sigep.gob.bo/rsportaltransparencia/#/portalHome/personal';
@@ -59,8 +60,12 @@ async function handleShutdown(signal) {
     isShuttingDown = true;
     console.log(`\n[Servidor] Señal ${signal} recibida. Realizando sincronización final a S3...`);
     try {
+        const warcFile = warcRecorder.close();
         if (s3Sync.enabled) {
             await s3Sync.uploadFile(OUTPUT_FILE);
+            if (warcFile) {
+                await s3Sync.uploadArchives();
+            }
             await s3Sync.uploadStatus({
                 currentPage: pageNum,
                 totalPages: Math.ceil(totalRegistros / BATCH_SIZE),
@@ -115,6 +120,11 @@ async function run() {
 
     const page = (await browser.pages())[0] || await browser.newPage();
     await page.setViewport({ width: 1600, height: 1000 });
+
+    if (process.env.WARC_ENABLED !== 'false') {
+        warcRecorder.startNewSession('sigep_scraper');
+        await warcRecorder.attachToPage(page);
+    }
 
     page.on('console', msg => console.log(`[Browser Console ${msg.type()}]`, msg.text()));
     page.on('pageerror', err => console.error('[Browser Error]', err.message));
