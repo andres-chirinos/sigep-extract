@@ -146,6 +146,46 @@
     };
 
     // ==========================================
+    // MUESTREO ALEATORIO SIMPLE (MAS)
+    // ==========================================
+    window.muestrearRegistros = function(sampleSize = 100, download = true) {
+        const allItems = Array.from(window.sigepDataMap ? window.sigepDataMap.values() : []);
+        if (allItems.length === 0) {
+            console.warn("⚠️ No hay registros en memoria para muestrear.");
+            alert("No hay registros para muestrear.");
+            return [];
+        }
+        const k = Math.min(sampleSize, allItems.length);
+        const pool = [...allItems];
+        const sample = [];
+        for (let i = 0; i < k; i++) {
+            const j = i + Math.floor(Math.random() * (pool.length - i));
+            const temp = pool[i];
+            pool[i] = pool[j];
+            pool[j] = temp;
+            sample.push(pool[i]);
+        }
+        console.log(`🎲 [Muestreo MAS] ${sample.length} registros seleccionados de una población de ${allItems.length} (${((sample.length / allItems.length) * 100).toFixed(2)}%).`);
+        if (download) {
+            const content = sample.map(r => {
+                const c = { ...r };
+                delete c.id;
+                return JSON.stringify(c);
+            }).join('\n');
+            const blob = new Blob([content], { type: 'application/jsonlines+json;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `sigep_muestra_${sample.length}_${Date.now()}.jsonl`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+        return sample;
+    };
+
+    // ==========================================
     // INTERFAZ FLOTANTE (HUD)
     // ==========================================
     const createOrUpdateHUD = () => {
@@ -373,10 +413,38 @@
     });
 
     console.log(`📂 Base de datos cargada con ${window.sigepDataMap.size} registros previos.`);
+    
+    // Preguntar al usuario configuración (Inicio, Fin, Salto)
+    const suggestedStartPage = Math.floor(window.sigepDataMap.size / 10) + 1;
+    let userStartingPage = suggestedStartPage;
+    let userEndPage = 100820;
+    let userStep = 1;
+
+    try {
+        const inputVal = prompt(
+            `🏛️ SIGEP Extractor Pro - Configuración\n\n` +
+            `Registros en BD local: ${window.sigepDataMap.size.toLocaleString()}\n` +
+            `Introduce: inicio, fin, salto\n` +
+            `Ejemplos:\n` +
+            `  - "189, 500, 1" (avanza de 1 en 1 hasta la 500)\n` +
+            `  - "1, 1000, 5" (avanza de 5 en 5)\n` +
+            `  - O solo el número de página inicial`,
+            `${suggestedStartPage}, 100820, 1`
+        );
+        if (inputVal !== null && inputVal.trim() !== '') {
+            const parts = inputVal.split(',').map(s => parseInt(s.trim(), 10));
+            if (!isNaN(parts[0]) && parts[0] > 0) userStartingPage = parts[0];
+            if (!isNaN(parts[1]) && parts[1] >= userStartingPage) userEndPage = parts[1];
+            if (!isNaN(parts[2]) && parts[2] > 0) userStep = parts[2];
+        }
+    } catch(e) {}
+    console.log(`🎯 Configuración seleccionada: Inicio=${userStartingPage}, Fin=${userEndPage}, Salto=${userStep}`);
+
     updateHUD({
         records: window.sigepDataMap.size,
+        page: userStartingPage,
         status: "Listo",
-        detail: `Cargados ${window.sigepDataMap.size} registros previos.`
+        detail: `Inicio: pág ${userStartingPage} | Fin: ${userEndPage} | Salto: ${userStep}`
     });
 
     // 2. Esperar a que la página se encuentre en reposo
@@ -449,7 +517,7 @@
     window.__sigepScrapingActive = true;
     window.__sigepScrapingPaused = false;
 
-    let currentPage = getActivePageNumber() || 1;
+    let currentPage = getActivePageNumber() || userStartingPage || 1;
     let estimatedTotalPages = getTotalPagesEstimated();
     let sessionStartTime = Date.now();
     let initialCount = window.sigepDataMap.size;

@@ -48,7 +48,7 @@ RUN npm install --omit=dev
 
 # Copiar scripts y entrypoint
 COPY server_scraper.js ./
-COPY s3_sync.js ./
+COPY sampling.js ./
 COPY entrypoint.sh ./
 RUN chmod +x entrypoint.sh
 
